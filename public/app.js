@@ -29,6 +29,8 @@ let eliminated = new Set();
 let elimKey = '';
 let picked = null;      // carte sélectionnée pendant le choix du personnage secret
 let guessMode = false;
+let banPicks = new Set(); // mes bans en cours de sélection pendant la phase de bans
+let justCreated = false;  // vrai entre « Créer un salon » et le premier état reçu
 let gridKey = '';
 let ws = null;
 
@@ -74,6 +76,34 @@ async function loadChars() {
 const charOf = (id) => chars.get(id) ?? { id, name: '???', icon: '', rank: 4, element: '', weapon: '', region: '' };
 const formatAttr = (attr, value) => (attr === 'rank' ? `${value}★` : value);
 
+function makeCard(c) {
+  const card = el('button', { className: `card r${c.rank}`, type: 'button' },
+    el('img', { src: `/img/${c.icon}.png`, alt: '', loading: 'lazy' }),
+    el('span', { className: 'name', textContent: c.name }),
+    el('span', { className: 'meta' },
+      el('i', { className: 'dot', style: `background:${ELEMENT_COLORS[c.element] ?? '#8892a8'}` }),
+      `${c.element} · ${c.region}`),
+    el('span', { className: 'meta', textContent: c.weapon }),
+  );
+  card.dataset.id = c.id;
+  return card;
+}
+
+const byName = (a, b) => a.name.localeCompare(b.name, 'fr');
+const matches = (c, query) => c.name.toLocaleLowerCase('fr').includes(query.trim().toLocaleLowerCase('fr'));
+// Ordre de sortie dans le jeu ; à date égale, l'identifiant suit l'ordre d'ajout.
+const byRelease = (a, b) => a.release - b.release || Number(a.id) - Number(b.id);
+const namesOf = (ids) => ids.map(charOf).sort(byName).map((c) => c.name).join(', ');
+
+function loadStoredBans() {
+  try {
+    const ids = JSON.parse(store.get(localStorage, 'hostBans'));
+    return Array.isArray(ids) ? ids.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
 function miniCard(node, id) {
   const c = charOf(id);
   node.className = `mini r${c.rank}`;
@@ -112,7 +142,7 @@ async function onMessage(msg) {
   if (msg.t !== 'state') return;
 
   const before = state;
-  if (msg.board.some((id) => !chars.has(id))) await loadChars().catch(() => {});
+  if ([...msg.board, ...msg.pool].some((id) => !chars.has(id))) await loadChars().catch(() => {});
   state = msg;
   roomCode = msg.code;
   setUrl(msg.code);
@@ -121,12 +151,19 @@ async function onMessage(msg) {
   if (key !== elimKey) {
     elimKey = key;
     picked = null;
+    banPicks = new Set();
     try { eliminated = new Set(JSON.parse(store.get(sessionStorage, key)) ?? []); } catch { eliminated = new Set(); }
   }
   if (before && before.phase !== 'lobby' && msg.phase === 'lobby' && msg.players.length < 2) {
     toast('Ton adversaire a quitté le salon.');
   }
   if (!(msg.phase === 'play' && msg.turn === msg.you && !msg.pending)) guessMode = false;
+  if (justCreated) {
+    // Nouveau salon : on réapplique la liste d'exclusions mémorisée par l'hôte.
+    justCreated = false;
+    const stored = loadStoredBans();
+    if (msg.you === 0 && msg.phase === 'lobby' && stored.length) send({ t: 'settings', bans: stored });
+  }
   render();
 }
 
@@ -161,13 +198,24 @@ function renderLobby(s) {
   if (s.players.length < 2) items.push(el('li', { className: 'empty', textContent: 'En attente d’un adversaire…' }));
   $('playerList').replaceChildren(...items);
 
+  const available = s.total - s.bans.length - 2 * s.banCount;
   $('sizeSelect').replaceChildren(...[24, 40, 60, 0].map((n) => el('option', {
     value: n,
-    textContent: n ? `${n} personnages` : `Tous les personnages (${s.total})`,
-    disabled: n > s.total,
+    textContent: n ? `${n} personnages` : `Tous les personnages (${Math.max(available, 0)})`,
+    disabled: n > available && n !== s.size,
   })));
   $('sizeSelect').value = s.size;
   $('sizeSelect').disabled = !host;
+
+  $('banCountSelect').replaceChildren(...[0, 3, 5].map((n) => el('option', {
+    value: n,
+    textContent: n ? `${n} bans chacun` : 'Aucun',
+  })));
+  $('banCountSelect').value = s.banCount;
+  $('banCountSelect').disabled = !host;
+  $('hostBansText').textContent = s.bans.length ? `${s.bans.length} : ${namesOf(s.bans)}` : 'Aucun';
+  $('hostBansText').classList.toggle('muted', !s.bans.length);
+  $('editBansBtn').hidden = !host;
 
   $('startBtn').hidden = !host;
   $('startBtn').disabled = s.players.length < 2;
@@ -177,27 +225,22 @@ function renderLobby(s) {
 }
 
 function renderGrid(s) {
-  const key = `${s.code}:${s.round}`;
+  // Pendant la phase de bans, la grille montre tous les personnages disponibles, pas encore le plateau.
+  const banning = s.phase === 'ban';
+  const key = `${s.code}:${s.round}:${banning ? 'ban' : 'board'}`;
   if (key !== gridKey) {
     gridKey = key;
-    const sorted = s.board.map(charOf).sort((a, b) => a.name.localeCompare(b.name, 'fr'));
-    $('grid').replaceChildren(...sorted.map((c) => {
-      const card = el('button', { className: `card r${c.rank}`, type: 'button' },
-        el('img', { src: `/img/${c.icon}.png`, alt: '', loading: 'lazy' }),
-        el('span', { className: 'name', textContent: c.name }),
-        el('span', { className: 'meta' },
-          el('i', { className: 'dot', style: `background:${ELEMENT_COLORS[c.element] ?? '#8892a8'}` }),
-          `${c.element} · ${c.region}`),
-        el('span', { className: 'meta', textContent: c.weapon }),
-      );
-      card.dataset.id = c.id;
-      return card;
-    }));
+    $('banSearch').value = '';
+    $('grid').replaceChildren(...(banning ? s.pool : s.board).map(charOf).sort(byName).map(makeCard));
     fillAttrValues(s);
   }
+  const myBans = banning ? new Set(s.myBans ?? banPicks) : null;
+  const query = banning ? $('banSearch').value : '';
   for (const card of $('grid').children) {
     const id = card.dataset.id;
     const over = s.phase === 'over';
+    card.hidden = banning && !!query.trim() && !matches(charOf(id), query);
+    card.classList.toggle('banned', banning && myBans.has(id));
     card.classList.toggle('out', s.phase === 'play' && eliminated.has(id));
     card.classList.toggle('sel', s.phase === 'pick' && picked === id && s.secret === null);
     card.classList.toggle('mine', (over || s.phase === 'pick') && s.secret === id);
@@ -225,9 +268,20 @@ function renderGame(s) {
   if (s.secret !== null) miniCard($('secretCard'), s.secret);
 
   // Bloc d'action
-  const show = { actPick: false, actWait: false, actTurn: false, actAnswer: false, actOver: false };
+  const show = { actBan: false, actPick: false, actWait: false, actTurn: false, actAnswer: false, actOver: false };
   let status = '';
-  if (s.phase === 'pick') {
+  if (s.phase === 'ban') {
+    if (s.myBans === null) {
+      show.actBan = true;
+      status = `Bannis jusqu'à ${s.banCount} personnages`;
+      $('banHint').textContent = `Clique sur les personnages que tu ne veux pas voir dans la grille : ${banPicks.size} / ${s.banCount} choisis. Ton adversaire ne voit pas tes choix avant la fin de la phase.`;
+      $('banConfirmBtn').textContent = banPicks.size ? `Valider mes ${banPicks.size} ban${banPicks.size > 1 ? 's' : ''}` : 'Ne bannir personne';
+    } else {
+      show.actWait = true;
+      status = `${opp.name} choisit ses bans…`;
+      $('waitText').textContent = `Tes bans sont enregistrés${s.myBans.length ? ` : ${namesOf(s.myBans)}` : ''}. Le plateau sera tiré dès que ton adversaire aura validé.`;
+    }
+  } else if (s.phase === 'pick') {
     if (s.secret === null) {
       show.actPick = true;
       status = 'Choisis ton personnage secret';
@@ -275,9 +329,21 @@ function renderGame(s) {
   $('statusText').textContent = status;
 
   $('toolBox').hidden = s.phase !== 'play';
-  document.body.classList.toggle('locked', s.phase === 'over' || (s.phase === 'pick' && s.secret !== null));
+  document.body.classList.toggle('locked',
+    s.phase === 'over' || (s.phase === 'pick' && s.secret !== null) || (s.phase === 'ban' && s.myBans !== null));
   const left = s.board.length - s.board.filter((id) => eliminated.has(id)).length;
-  $('remaining').textContent = s.phase === 'play' ? `${left} / ${s.board.length} suspects` : `${s.board.length} personnages`;
+  $('remaining').textContent = s.phase === 'play'
+    ? `${left} / ${s.board.length} suspects`
+    : `${(s.phase === 'ban' ? s.pool : s.board).length} personnages`;
+
+  // Bans de la manche, révélés une fois le plateau tiré
+  const banned = s.roundBans?.some((ids) => ids.length);
+  $('roundBansBox').hidden = !banned;
+  if (banned) {
+    $('roundBansText').replaceChildren(...[me, 1 - me].map((i) => el('p', {},
+      el('b', { textContent: `${i === me ? 'Toi' : opp.name} : ` }),
+      s.roundBans[i].length ? namesOf(s.roundBans[i]) : 'aucun')));
+  }
 
   renderLog(s);
 }
@@ -319,7 +385,61 @@ function eliminateBy(matching) {
   render();
 }
 
+// ---------------------------------------------------------------- Exclusions de l'hôte
+
+let dlgBans = new Set();
+
+function renderBansDlg() {
+  const query = $('bansSearch').value;
+  for (const card of $('bansGrid').children) {
+    card.classList.toggle('banned', dlgBans.has(card.dataset.id));
+    card.hidden = !!query.trim() && !matches(charOf(card.dataset.id), query);
+  }
+  $('bansDlgCount').textContent = `(${dlgBans.size})`;
+}
+
+function fillBansValues() {
+  const attr = $('bansAttr').value;
+  const values = [...new Set([...chars.values()].map((c) => c[attr]))].sort((a, b) => String(a).localeCompare(String(b), 'fr'));
+  $('bansValue').replaceChildren(...values.map((v) => el('option', { value: v, textContent: formatAttr(attr, v) })));
+}
+
+function openBansDlg() {
+  dlgBans = new Set(state.bans);
+  $('bansSearch').value = '';
+  $('bansGrid').replaceChildren(...[...chars.values()].sort(byRelease).map(makeCard));
+  fillBansValues();
+  renderBansDlg();
+  $('bansDlg').showModal();
+}
+
 // ---------------------------------------------------------------- Événements
+
+$('bansAttr').replaceChildren(...ATTRS.map(([value, label]) => el('option', { value, textContent: label })));
+$('bansAttr').onchange = fillBansValues;
+$('bansSearch').oninput = renderBansDlg;
+$('editBansBtn').onclick = openBansDlg;
+$('bansGrid').onclick = (event) => {
+  const id = event.target.closest('.card')?.dataset.id;
+  if (!id) return;
+  if (!dlgBans.delete(id)) dlgBans.add(id);
+  renderBansDlg();
+};
+$('bansAddBtn').onclick = () => {
+  const attr = $('bansAttr').value;
+  for (const c of chars.values()) if (String(c[attr]) === $('bansValue').value) dlgBans.add(c.id);
+  renderBansDlg();
+};
+$('bansClearBtn').onclick = () => { dlgBans.clear(); renderBansDlg(); };
+$('bansCancelBtn').onclick = () => $('bansDlg').close();
+$('bansSaveBtn').onclick = () => {
+  store.set(localStorage, 'hostBans', JSON.stringify([...dlgBans]));
+  send({ t: 'settings', bans: [...dlgBans] });
+  $('bansDlg').close();
+};
+$('banCountSelect').onchange = () => send({ t: 'settings', banCount: Number($('banCountSelect').value) });
+$('banSearch').oninput = () => render();
+$('banConfirmBtn').onclick = () => send({ t: 'bans', ids: [...banPicks] });
 
 $('attrSelect').replaceChildren(...ATTRS.map(([value, label]) => el('option', { value, textContent: label })));
 $('attrSelect').onchange = () => fillAttrValues();
@@ -327,11 +447,12 @@ $('hideMatchBtn').onclick = () => eliminateBy(true);
 $('hideOtherBtn').onclick = () => eliminateBy(false);
 $('resetBtn').onclick = () => { eliminated.clear(); saveEliminated(); render(); };
 
-$('createBtn').onclick = () => send({ t: 'create', name: playerName(), pid });
+$('createBtn').onclick = () => { justCreated = true; send({ t: 'create', name: playerName(), pid }); };
 $('joinForm').onsubmit = (event) => {
   event.preventDefault();
   const code = $('codeInput').value.trim().toUpperCase();
   if (code.length !== 5) return toast('Le code d’un salon fait 5 caractères.');
+  justCreated = false;
   send({ t: 'join', code, name: playerName(), pid });
 };
 $('leaveBtn').onclick = () => {
@@ -378,7 +499,12 @@ $('guessDlg').onclose = () => {
 $('grid').onclick = (event) => {
   const id = event.target.closest('.card')?.dataset.id;
   if (!id || !state) return;
-  if (state.phase === 'pick' && state.secret === null) {
+  if (state.phase === 'ban' && state.myBans === null) {
+    if (!banPicks.delete(id)) {
+      if (banPicks.size >= state.banCount) return toast(`Tu as déjà choisi tes ${state.banCount} bans : retires-en un pour changer.`);
+      banPicks.add(id);
+    }
+  } else if (state.phase === 'pick' && state.secret === null) {
     picked = id;
   } else if (state.phase === 'play' && guessMode) {
     guessTarget = id;

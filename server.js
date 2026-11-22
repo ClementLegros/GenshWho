@@ -18,6 +18,7 @@ const MIME = {
 };
 const DISCONNECT_GRACE_MS = 2 * 60 * 1000;
 const BOARD_SIZES = [24, 40, 60, 0]; // 0 = tous les personnages
+const BAN_COUNTS = [0, 3, 5];       // bans par joueur avant chaque manche
 
 // ---------------------------------------------------------------- HTTP
 
@@ -81,10 +82,21 @@ function view(room, me) {
     phase: room.phase,
     round: room.round,
     size: room.size,
+    banCount: room.banCount,
+    bans: room.bans,
     total: getCharacters().length,
     you: me,
-    players: room.players.map((p) => ({ name: p.name, online: !!p.ws, ready: p.secret !== null, score: p.score })),
+    players: room.players.map((p) => ({
+      name: p.name,
+      online: !!p.ws,
+      ready: room.phase === 'ban' ? p.bans !== null : p.secret !== null,
+      score: p.score,
+    })),
     board: room.board,
+    // Phase de bans : chacun choisit dans `pool` ; les bans adverses restent cachés jusqu'au tirage du plateau.
+    pool: room.pool,
+    myBans: room.players[me].bans,
+    roundBans: room.phase === 'ban' || room.phase === 'lobby' ? null : room.players.map((p) => p.bans ?? []),
     turn: room.turn,
     pending: room.pending,
     log: room.log,
@@ -101,10 +113,20 @@ function broadcast(room) {
 function resetToLobby(room) {
   room.phase = 'lobby';
   room.board = [];
+  room.pool = [];
   room.pending = null;
   room.log = [];
   room.winner = null;
-  for (const p of room.players) p.secret = null;
+  for (const p of room.players) {
+    p.secret = null;
+    p.bans = null;
+  }
+}
+
+function drawBoard(room, pool) {
+  room.board = sample(pool, room.size);
+  room.pool = [];
+  room.phase = 'pick';
 }
 
 function attach(ws, room, player) {
@@ -158,6 +180,7 @@ const handlers = {
     detach(ws, { leave: true });
     const room = {
       code: makeCode(), players: [], phase: 'lobby', size: 24, round: 0,
+      banCount: 0, bans: [], pool: [],
       board: [], turn: 0, pending: null, log: [], winner: null,
     };
     rooms.set(room.code, room);
@@ -173,7 +196,7 @@ const handlers = {
     let player = room.players.find((p) => p.pid === pid);
     if (!player) {
       if (room.players.length >= 2) return send(ws, { t: 'gone', msg: 'Ce salon est déjà complet.' });
-      player = { pid, name: cleanName(msg.name), ws: null, secret: null, score: 0, timer: null };
+      player = { pid, name: cleanName(msg.name), ws: null, secret: null, bans: null, score: 0, timer: null };
       room.players.push(player);
     }
     if (ws.room && ws.room !== room) detach(ws, { leave: true });
@@ -189,6 +212,11 @@ const handlers = {
   settings(ws, msg, room, me) {
     if (me !== 0 || room.phase !== 'lobby') return;
     if (BOARD_SIZES.includes(msg.size)) room.size = msg.size;
+    if (BAN_COUNTS.includes(msg.banCount)) room.banCount = msg.banCount;
+    if (Array.isArray(msg.bans)) {
+      const known = new Set(getCharacters().map((c) => c.id));
+      room.bans = [...new Set(msg.bans.map(String))].filter((id) => known.has(id));
+    }
     broadcast(room);
   },
 
@@ -197,11 +225,29 @@ const handlers = {
     if (room.players.length < 2) return fail(ws, 'Il faut deux joueurs pour lancer la partie.');
     const ids = getCharacters().map((c) => c.id);
     if (ids.length < 2) return fail(ws, 'Les personnages ne sont pas encore chargés, réessaie dans un instant.');
+    const excluded = new Set(room.bans);
+    const pool = ids.filter((id) => !excluded.has(id));
+    if (pool.length - 2 * room.banCount < 2) return fail(ws, 'Trop de personnages exclus : il n’en reste pas assez pour jouer.');
     resetToLobby(room);
-    room.board = sample(ids, room.size);
-    room.phase = 'pick';
     room.round += 1;
     room.turn = room.round === 1 ? randomInt(2) : room.round % 2;
+    if (room.banCount > 0) {
+      room.pool = pool;
+      room.phase = 'ban';
+    } else {
+      drawBoard(room, pool);
+    }
+    broadcast(room);
+  },
+
+  bans(ws, msg, room, me) {
+    const player = room.players[me];
+    if (room.phase !== 'ban' || player.bans !== null || !Array.isArray(msg.ids)) return;
+    player.bans = [...new Set(msg.ids.map(String))].filter((id) => room.pool.includes(id)).slice(0, room.banCount);
+    if (room.players.every((p) => p.bans !== null)) {
+      const out = new Set(room.players.flatMap((p) => p.bans));
+      drawBoard(room, room.pool.filter((id) => !out.has(id)));
+    }
     broadcast(room);
   },
 
@@ -253,7 +299,7 @@ const handlers = {
   },
 };
 
-const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 4096 });
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 16384 });
 
 wss.on('error', () => {}); // les erreurs d'écoute sont traitées sur le serveur HTTP, plus bas
 

@@ -29,16 +29,21 @@ let all = []; // tous les personnages connus, y compris ceux pas encore sortis
 let updatedAt = 0;
 
 function normalize(data) {
-  const seenIcons = new Set();
+  const byIcon = new Map();
   const list = [];
   for (const raw of Object.values(data.items ?? {})) {
     if (!raw?.name || !/^UI_AvatarIcon_\w+$/.test(raw.icon ?? '')) continue;
     if (raw.icon.includes('Mannequin')) continue; // avatars personnalisables, pas de vrais personnages
-    if (seenIcons.has(raw.icon)) continue; // le Voyageur existe en une version par élément
-    seenIcons.add(raw.icon);
+    const release = (raw.release ?? 0) * 1000;
+    const seen = byIcon.get(raw.icon);
+    if (seen) {
+      // Le Voyageur existe en une version par élément : on garde une seule carte, à sa date la plus ancienne.
+      seen.release = Math.min(seen.release, release);
+      continue;
+    }
     const traveler = TRAVELER_ICONS.has(raw.icon);
     const body = raw.bodyType ?? '';
-    list.push({
+    const char = {
       id: String(raw.id).split('-')[0],
       name: raw.name,
       icon: raw.icon,
@@ -48,8 +53,10 @@ function normalize(data) {
       region: REGIONS.find(([key]) => String(raw.region).startsWith(key))?.[1] ?? 'Autre',
       gender: body === 'BOY' || body === 'MALE' ? 'Masculin' : 'Féminin',
       height: body === 'LOLI' ? 'Petit' : body === 'LADY' || body === 'MALE' ? 'Grand' : 'Moyen',
-      release: (raw.release ?? 0) * 1000,
-    });
+      release,
+    };
+    byIcon.set(raw.icon, char);
+    list.push(char);
   }
   return list;
 }
@@ -81,7 +88,7 @@ export async function initCharacters() {
 /** Personnages déjà sortis (la date de sortie est vérifiée à chaque appel). */
 export function getCharacters() {
   const now = Date.now();
-  return all.filter((c) => c.release <= now).map(({ release, ...c }) => c);
+  return all.filter((c) => c.release <= now);
 }
 
 export function getUpdatedAt() {
