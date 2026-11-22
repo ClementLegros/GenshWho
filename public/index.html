@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GenshWho — devine le personnage</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>❓</text></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/">Gensh<span>Who</span></a>
+    <div class="top-right">
+      <span id="roomChip" class="chip" hidden></span>
+      <button id="leaveBtn" class="btn ghost small" hidden>Quitter</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Accueil -->
+    <section id="home" class="panel narrow">
+      <h1>Devine le personnage de ton adversaire</h1>
+      <p class="muted">Chacun choisit un personnage en secret. À tour de rôle, posez une question à laquelle on répond par oui ou par non, éliminez les suspects, et soyez le premier à trouver.</p>
+      <label class="field">
+        <span>Ton pseudo</span>
+        <input id="nameInput" maxlength="20" autocomplete="nickname" placeholder="Paimon">
+      </label>
+      <button id="createBtn" class="btn primary wide">Créer un salon</button>
+      <div class="or"><span>ou</span></div>
+      <form id="joinForm" class="row">
+        <input id="codeInput" maxlength="5" placeholder="CODE" autocapitalize="characters" autocomplete="off" spellcheck="false">
+        <button class="btn">Rejoindre</button>
+      </form>
+    </section>
+
+    <!-- Salon -->
+    <section id="lobby" class="panel narrow" hidden>
+      <h1>Salon <span id="lobbyCode" class="code"></span></h1>
+      <p class="muted">Envoie ce lien à ton adversaire pour qu'il te rejoigne.</p>
+      <div class="row">
+        <input id="linkInput" readonly>
+        <button id="copyBtn" class="btn">Copier</button>
+      </div>
+      <ul id="playerList" class="players"></ul>
+      <label class="field">
+        <span>Nombre de personnages sur le plateau</span>
+        <select id="sizeSelect"></select>
+      </label>
+      <button id="startBtn" class="btn primary wide">Lancer la partie</button>
+      <p id="lobbyHint" class="muted center"></p>
+    </section>
+
+    <!-- Partie -->
+    <section id="game" hidden>
+      <div class="layout">
+        <div class="board-col">
+          <div class="board-head">
+            <h2 id="statusText"></h2>
+            <span id="remaining" class="muted"></span>
+          </div>
+          <div id="grid" class="grid"></div>
+        </div>
+
+        <aside class="side">
+          <div class="box">
+            <div class="scores" id="scores"></div>
+          </div>
+
+          <div class="box" id="secretBox" hidden>
+            <h3>Ton personnage</h3>
+            <div id="secretCard" class="mini"></div>
+          </div>
+
+          <div class="box" id="actionBox">
+            <!-- Choix du personnage secret -->
+            <div id="actPick" hidden>
+              <h3>Choisis ton personnage secret</h3>
+              <p class="muted">Clique sur une carte, puis confirme.</p>
+              <div class="row">
+                <button id="randomBtn" class="btn">Au hasard</button>
+                <button id="confirmBtn" class="btn primary grow" disabled>Confirmer</button>
+              </div>
+            </div>
+            <div id="actWait" hidden>
+              <p id="waitText" class="muted"></p>
+            </div>
+            <!-- Mon tour -->
+            <div id="actTurn" hidden>
+              <h3>À toi de jouer</h3>
+              <form id="askForm" class="row">
+                <input id="askInput" maxlength="200" placeholder="Ton personnage est-il Pyro ?" autocomplete="off">
+                <button class="btn primary">Poser</button>
+              </form>
+              <button id="guessBtn" class="btn wide">Deviner un personnage</button>
+              <p id="guessHint" class="muted" hidden>Clique sur le personnage que tu veux proposer. Si tu te trompes, tu passes ton tour.</p>
+            </div>
+            <!-- Répondre -->
+            <div id="actAnswer" hidden>
+              <h3 id="answerTitle"></h3>
+              <p id="answerQuestion" class="question"></p>
+              <div class="row">
+                <button id="yesBtn" class="btn yes grow">Oui</button>
+                <button id="noBtn" class="btn no grow">Non</button>
+              </div>
+            </div>
+            <!-- Fin de partie -->
+            <div id="actOver" hidden>
+              <h3 id="overTitle"></h3>
+              <div id="overSecrets" class="over-secrets"></div>
+              <div id="overHost" class="row">
+                <button id="backBtn" class="btn">Retour au salon</button>
+                <button id="againBtn" class="btn primary grow">Rejouer</button>
+              </div>
+              <p id="overGuest" class="muted">En attente de l'hôte pour relancer une partie…</p>
+            </div>
+          </div>
+
+          <div class="box" id="toolBox" hidden>
+            <h3>Tri rapide</h3>
+            <div class="row">
+              <select id="attrSelect"></select>
+              <select id="valueSelect" class="grow"></select>
+            </div>
+            <div class="row">
+              <button id="hideMatchBtn" class="btn small grow">Éliminer ceux-ci</button>
+              <button id="hideOtherBtn" class="btn small grow">Éliminer les autres</button>
+            </div>
+            <button id="resetBtn" class="btn ghost small wide">Tout réafficher</button>
+          </div>
+
+          <div class="box">
+            <h3>Historique</h3>
+            <ol id="log" class="log"></ol>
+          </div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span id="dataInfo"></span>
+    <span>Projet de fan non officiel, sans lien avec HoYoverse. Genshin Impact et ses personnages appartiennent à HoYoverse.</span>
+  </footer>
+
+  <dialog id="guessDlg">
+    <form method="dialog">
+      <div id="guessDlgCard" class="mini"></div>
+      <p>Proposer ce personnage ? Si ce n'est pas le bon, tu passes ton tour.</p>
+      <div class="row">
+        <button class="btn grow" value="no">Annuler</button>
+        <button class="btn primary grow" value="yes">Proposer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
